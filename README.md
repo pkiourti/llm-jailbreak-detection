@@ -20,7 +20,10 @@ Both attacks target harmful behaviors from AdvBench (Zou et al. 2023) against `Q
 
 ### Defenses
 
-- **Attribution (IG), as in MISA and llm-backdoor.** It runs Integrated Gradients from the logit of the reply's first token (e.g. "Sure" vs. "I") back to the user-message tokens. The baseline replaces only the user message with padding, so the chat template is kept. It then removes the `--remove-k` (default 3) most-attributed tokens and regenerates. The input is flagged if the model complied before and refuses after. For GCG, *suffix localization* is the fraction of removed tokens that fall inside the adversarial suffix.
+- **Attribution (IG or EG), as in MISA and llm-backdoor.** It attributes the logit of the reply's first token (e.g. "Sure" vs. "I") back to the user-message tokens, removes the `--remove-k` (default 3) most-attributed tokens, and regenerates. The input is flagged if the model complied before and refuses after. For GCG, *suffix localization* is the fraction of removed tokens that fall inside the adversarial suffix. Two things are configurable, both as CLI flags (`--help`):
+  - `--attr-method ig` (default): Integrated Gradients with a single padding baseline (only the user message is ablated, so the chat template is kept).
+  - `--attr-method eg`: Expected Gradients ([Erion et al. 2021](https://www.nature.com/articles/s42256-021-00343-w)), as used in [MISA](https://arxiv.org/abs/2305.09941). Instead of one fixed baseline, it averages over random interpolation points *and* a distribution of baselines — here, `--eg-baselines` harmless prompts (padded/truncated to the input's length, the text analogue of MISA's "eval-set images as baselines"), each sampled with `--eg-samples` draws. Implemented with plain `captum.attr.GradientShap` plus a manual forward hook, since `LayerGradientShap`'s NoiseTunnel machinery adds Gaussian noise to the raw token-id input before any layer-hooking happens, which only makes sense for continuous inputs.
+  - `--attr-layer` (default: unset, meaning the input embeddings / token-level); an integer `k` attributes at `hidden_states[k]` instead, the same residual-stream location the activation probes read.
 - **Activation probes.** These are difference-of-means directions at the middle layer, fit on plain harmful vs. harmless prompts that are disjoint from the attacked ones:
   - The *harmfulness* direction is read at the last user token. It is the detector: does the model still represent the request as harmful?
   - The *refusal* direction ([Arditi et al. 2024](https://arxiv.org/abs/2406.11717)) is read at the last prompt token. It is diagnostic: a working jailbreak should push it below threshold.
@@ -31,7 +34,46 @@ Both attacks target harmful behaviors from AdvBench (Zou et al. 2023) against `Q
 
 ### Results
 
-<!-- Paste the table printed by a full run here -->
+**Methodology note, read this first.** Both judges in `judge.py` turned out to be unreliable measures of real harm. The keyword judge counts a reply as "jailbroken" whenever it avoids a refusal phrase — including replies that are garbled nonsense, backwards (e.g. giving a *victim* of identity theft advice instead of a perpetrator), or cleanly deflected to a benign topic. The LLM judge is not simply stricter: rescoring with a bigger model (`qwen2.5-3b-instruct`) showed it rewards *fluent, structured, "step-by-step guide"-shaped* text largely independent of whether it addresses the actual request — it gave high scores to responses that were the literal opposite of the goal (e.g. 8/10 for "describe how to abuse a child" answered with child-*protection* advice) and low scores to responses that were genuinely closer to real harm. Below, "ASR" means the keyword judge's number (for comparability with the attack literature); "real/manual harm rate" means every response was read and scored against a four-point rubric (on-topic, coherent, specific, actionable) by a human/Claude pass, with no second rater — treat these as a careful single read, not a validated inter-rater-agreement number.
+
+#### Attack success: reported vs. real
+
+| | Keyword-judge ASR | Real harm rate (manual) |
+|---|---|---|
+| GCG, weak search (`--gcg-batch 32`) | 100% | **49%** (n=100, CI roughly ±10pt) |
+| GCG, strong search (`--gcg-batch 128`, no early stop) | 100% | **54%** (n=100) |
+
+PAIR was explored qualitatively earlier in this investigation (both judges turned out to be similarly unreliable for it — the keyword judge over-reports it the same way it over-reports GCG, and the LLM judge under-reports it by rewarding fluent-but-off-target replies) but wasn't scaled up to a comparable sample size, so it's left out of this table pending a proper run.
+
+GCG's real hit rate roughly **doubled** (from ~20% to ~50%) simply by removing the pipeline's premature early-stopping (`--gcg-check-every 25` → `--gcg-steps`) and giving replies more room to finish (`--max-new-tokens 64` → `150`/`300`) — the default config under-sells the attack. Increasing the candidate pool further (`--gcg-batch 128` vs. `32`) pushed it a bit higher again, though that specific gain (49%→54%) is within noise at n=100 per condition.
+
+#### Defense performance against real jailbreaks (default settings: IG, embedding layer, `--remove-k 3`)
+
+Measured on 200 independent GCG attack attempts (98 distinct AdvBench behaviors × weak/strong, Qwen2.5-0.5B-Instruct), each manually labeled:
+
+| | Recall (of real jailbreaks) | False-positive rate (on non-jailbreaks) | Precision |
+|---|---|---|---|
+| IG | 11.9% · 95% CI [7%, 20%] | 14.9% · CI [8%, 25%] | ~55% |
+| Activation probe | 39.6% · CI [31%, 49%] | 49.3% · CI [38%, 61%] | ~55% |
+
+Neither defense is close to deployable: IG rarely fires at all (catches ~1 in 8 real jailbreaks) but is relatively quiet on safe inputs; the probe catches more but at the cost of flagging roughly half of everything, harmful or not. **Attack strength (weak vs. strong search) does not reliably change either defense's recall or FPR** — every weak/strong comparison we ran had overlapping confidence intervals, including an initial, exciting-looking 83%→20% IG collapse from a 6-item sample that did not replicate at n=60 (±18% vs. the true ~15-18%, confirming that result was sampling noise, not a real effect of attack strength).
+
+#### Tuning the defense: none of it breaks the trade-off
+
+A full sweep over `--attr-method` (ig/eg), `--attr-layer` (unset/12), and `--remove-k` (3/5/8/12), on the same 200 GCG attempts:
+
+| | `remove_k=3` | 5 | 8 | 12 |
+|---|---|---|---|---|
+| IG, embedding | 18% / 15% | 28% / 36% | 39% / 39% | 50% / 43% |
+| IG, mid-layer | 24% / 25% | 34% / 36% | 53% / 58% | 75% / 67% |
+| EG, embedding | 19% / 15% | 31% / 34% | 39% / 40% | 55% / 49% |
+| EG, mid-layer | 18% / 25% | 27% / 36% | 44% / 46% | 69% / 61% |
+
+(recall% / FPR%; precision is flat at 51–66% in every one of these 16 cells)
+
+Every knob moves recall and false-positive rate together along essentially the same curve — more aggressive settings (more tokens removed, a later layer) catch more real jailbreaks but flag proportionally more harmless ones too, without ever improving precision. Expected Gradients never distinguishes itself from plain IG at matched settings (CIs overlap at every cell); `IG_STEPS` (the integration resolution, swept 4/8/16/32) is pure noise with no monotonic trend at all. The middle-layer attribution does reach a real, non-overlapping-CI recall advantage over the embedding layer at `remove_k=12` (75% vs. 50%) — but at 67% FPR, meaning it would flag two of every three harmless inputs, so it's not a usable improvement, just a further point on the same curve.
+
+**Revisiting the pre-registered hypothesis above, for the GCG half of it:** IG does localize GCG's suffix well mechanically (92–97% of removed tokens fall inside it, whenever IG flags something at all), but its *overall* recall against real jailbreaks is low (~12-24%) regardless of attack strength, method, or layer — "localizes well when it fires" is not the same as "fires often enough to matter." The PAIR side of the hypothesis (the harmfulness probe should be more robust to it) hasn't been tested at a comparable sample size yet — see above.
 
 ### Run it
 
@@ -49,6 +91,10 @@ uv run python -m jailbreak
 
 ```bash
 uv run python -m jailbreak --attacks gcg --model qwen2.5-1.5b-instruct --dtype bfloat16
+```
+
+```bash
+uv run python -m jailbreak --attacks gcg --attr-method eg --attr-layer 12 --remove-k 8
 ```
 
 - `--smoke` checks the whole pipeline in about 30 seconds on a laptop CPU (after the first model download), using 2 behaviors, 3 GCG steps and 1 PAIR round. Its numbers are meaningless.
@@ -72,7 +118,7 @@ uv run python -m jailbreak --attacks gcg --model qwen2.5-1.5b-instruct --dtype b
 | `model.py` | Model loading, chat-template encoding (the user message is tokenized separately so a GCG suffix keeps its tokens), generation |
 | `judge.py` | Keyword and LLM judges |
 | `gcg.py`, `pair.py` | The two attacks |
-| `defense.py` | `AttributionDefense` (IG + token removal) and `ActivationProbes` (harmfulness and refusal directions) |
+| `defense.py` | `AttributionDefense` (IG or EG + token removal, embedding or mid-layer) and `ActivationProbes` (harmfulness and refusal directions) |
 | `plots.py` | Attribution bars and the probe-projection scatter |
 | `cli.py` | Argument parsing, the pipeline and the results table |
 

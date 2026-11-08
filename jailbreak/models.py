@@ -4,6 +4,7 @@ MODELS = {
     "qwen2.5-0.5b-instruct": dict(id="Qwen/Qwen2.5-0.5B-Instruct"),
     "qwen2.5-1.5b-instruct": dict(id="Qwen/Qwen2.5-1.5B-Instruct"),
     "qwen2.5-3b-instruct":   dict(id="Qwen/Qwen2.5-3B-Instruct"),
+    "phi-3.5-mini-instruct": dict(id="microsoft/Phi-3.5-mini-instruct"),
     "smollm2-360m-instruct": dict(id="HuggingFaceTB/SmolLM2-360M-Instruct"),
     "smollm2-1.7b-instruct": dict(id="HuggingFaceTB/SmolLM2-1.7B-Instruct"),
     "llama3.2-1b-instruct":  dict(id="meta-llama/Llama-3.2-1B-Instruct", gated=True),

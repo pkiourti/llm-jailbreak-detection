@@ -22,9 +22,9 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(prog="python -m jailbreak",
                                 description="Jailbreak a small chat model with GCG and PAIR, then detect the jailbreaks with "
                                             "Integrated Gradients and activation probes.")
-    choices = {"DTYPE": ["float32", "bfloat16", "float16"], "JUDGE": ["keyword", "llm"]}
+    choices = {"DTYPE": ["float32", "bfloat16", "float16"], "JUDGE": ["keyword", "llm"], "ATTR_METHOD": ["ig", "eg"]}
     for f in fields(Config):
-        typ = {"PROBE_LAYER": int}.get(f.name, f.type if f.type in (int, float, str) else str)
+        typ = {"PROBE_LAYER": int, "ATTR_LAYER": int}.get(f.name, f.type if f.type in (int, float, str) else str)
         p.add_argument("--" + f.name.lower().replace("_", "-"), dest=f.name, type=typ, default=None,
                        help=f"default: {f.default}", choices=choices.get(f.name))
     p.add_argument("--model", dest="MODEL_NAME", default=None, help="alias for --model-name; presets: " + ", ".join(MODELS))
@@ -41,9 +41,10 @@ def pct(x):
     return "n/a" if np.isnan(x) else f"{x:.1%}"
 
 
-def results_table(r, attacks):
-    rows = [("Attack success rate", "asr"), ("IG defense: detection rate", "ig_detection_rate"),
-            ("IG defense: removed tokens in GCG suffix", "ig_suffix_localization"), ("ASR after IG defense", "asr_after_ig"),
+def results_table(r, attacks, attr_method="ig"):
+    tag = attr_method.upper()
+    rows = [("Attack success rate", "asr"), (f"{tag} defense: detection rate", "ig_detection_rate"),
+            (f"{tag} defense: removed tokens in GCG suffix", "ig_suffix_localization"), (f"ASR after {tag} defense", "asr_after_ig"),
             ("Harmfulness probe: detection rate", "probe_detection_rate"), ("ASR after probe", "asr_after_probe"),
             ("Jailbreaks below refusal threshold", "refusal_suppressed")]
     lines = ["| Metric | " + " | ".join(a.upper() for a in attacks) + " |", "|---" * (len(attacks) + 1) + "|"]
@@ -51,7 +52,7 @@ def results_table(r, attacks):
     return f'''
 Without an attack: ASR {pct(r["baseline_asr"])}, refusals on harmless prompts {pct(r["harmless_refusal_rate"])}, \
 harmfulness probe flags {pct(r["probe_detection_plain_harmful"])} of plain harmful prompts.
-False positives on harmless prompts: IG defense {pct(r["ig_false_positive_rate"])}, harmfulness probe {pct(r["probe_false_positive_rate"])}.
+False positives on harmless prompts: {tag} defense {pct(r["ig_false_positive_rate"])}, harmfulness probe {pct(r["probe_false_positive_rate"])}.
 
 ''' + "\n".join(lines) + "\n"
 
@@ -108,7 +109,8 @@ def main(argv=None):
             runs[a].append(runner.attack(g, t))
 
     print("\n## 6. Defenses")
-    ig = AttributionDefense(model, tok, cfg, device)
+    ig = AttributionDefense(model, tok, cfg, device, method=cfg.ATTR_METHOD, layer=cfg.ATTR_LAYER,
+                            harmless_pool=data["probe_harmless"], eg_baselines=cfg.EG_BASELINES, eg_samples=cfg.EG_SAMPLES)
     harmless_ig = [ig.defend(u, r) for u, r in zip(data["eval_harmless"], harmless_resp)]
     results["ig_false_positive_rate"] = mean([d["flagged"] for d in harmless_ig])
     projections = {"harmless": (harmless_h, harmless_r), "plain harmful": (plain_h, plain_r)}
@@ -137,7 +139,7 @@ def main(argv=None):
         for rs in runs.values():
             for x in rs:
                 f.write(json.dumps(x) + "\n")
-    print(results_table(results, attacks))
+    print(results_table(results, attacks, cfg.ATTR_METHOD))
 
     if not args.no_plots:
         plot_projections(projections, out_dir / "probe_projections.png")

@@ -24,7 +24,11 @@ class Config:
     PAIR_STREAMS:   int   = 3           # parallel attacker conversations
     PAIR_ITERS:     int   = 5           # refinement rounds per stream
     # defenses
+    ATTR_METHOD:    str   = "ig"        # attribution method: "ig" (Integrated Gradients) or "eg" (Expected Gradients, Erion et al. 2021)
+    ATTR_LAYER:     Optional[int] = None  # attribution point: None = input embeddings; int k = hidden_states[k]
     IG_STEPS:       int   = 16          # Integrated Gradients steps
+    EG_BASELINES:   int   = 8           # EG: harmless prompts sampled per attribution as the baseline distribution
+    EG_SAMPLES:     int   = 16          # EG: (baseline, alpha) draws averaged per attribution
     REMOVE_K:       int   = 3           # attribution defense removes this many top-attributed prompt tokens
     PROBE_LAYER:    Optional[int] = None  # residual-stream layer for the probes (None = middle layer)
     SEED:           int   = 0

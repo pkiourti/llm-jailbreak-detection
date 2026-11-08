@@ -10,7 +10,10 @@ def plot_attr(defense, user, path, suffix_tokens=0):
     colors = ["tab:red" if i >= n - suffix_tokens else "tab:blue" for i in range(n)] if suffix_tokens else "tab:blue"
     fig, ax = plt.subplots(figsize=(max(6, 0.35 * n), 3))
     ax.bar(range(n), scores, color=colors)
-    ax.set_xticks(range(n)); ax.set_xticklabels([repr(t)[1:-1] for t in tokens], rotation=90, fontsize=7)
+    ax.set_xticks(range(n))
+    # parse_math=False: a GCG suffix is unconstrained printable ASCII and can contain "$", which matplotlib
+    # otherwise tries to parse as LaTeX math -- these are raw token strings, never meant as math.
+    ax.set_xticklabels([repr(t)[1:-1] for t in tokens], rotation=90, fontsize=7, parse_math=False)
     ax.set_ylabel("IG attribution"); ax.set_title(f"attribution of first reply token {defense.tok.decode([first])!r}")
     fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
     print(f"saved {path}")

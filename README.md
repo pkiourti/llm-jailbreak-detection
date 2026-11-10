@@ -75,6 +75,27 @@ Every knob moves recall and false-positive rate together along essentially the s
 
 **Revisiting the pre-registered hypothesis above, for the GCG half of it:** IG does localize GCG's suffix well mechanically (92–97% of removed tokens fall inside it, whenever IG flags something at all), but its *overall* recall against real jailbreaks is low (~12-24%) regardless of attack strength, method, or layer — "localizes well when it fires" is not the same as "fires often enough to matter." The PAIR side of the hypothesis (the harmfulness probe should be more robust to it) hasn't been tested at a comparable sample size yet — see above.
 
+#### Does a model's best classification-defense layer transfer to the generative jailbreak task?
+
+A separate SST-2 backdoor-classification study ([llm-backdoor-attribution](https://github.com/pkiourti/llm-backdoor-attribution)) found that attributing at ~75% depth gives Phi-3.5-mini-instruct a strikingly good 95% detection rate for a planted classification backdoor — far better than embedding-layer attribution on the same model. That's a classification setting with a universal, fixed trigger; the question here is whether that "magic layer" also helps IG catch GCG's per-prompt optimized suffix on the same model.
+
+200 GCG attempts against Phi-3.5-mini-instruct (`gcg-phi35-{weak,strong}[-seed1]`, 50 each) were swept over `--attr-layer` (embedding / 16 / 24, i.e. the embedding, mid-depth, and ~75%-depth points) × `--remove-k` (3/5/8/12) with [`scripts/phi35_layer_sweep.py`](scripts/phi35_layer_sweep.py):
+
+| | `remove_k=3` | 5 | 8 | 12 |
+|---|---|---|---|---|
+| embedding | 16% | 17% | 17% | 7% |
+| layer 16 | 39% | 45% | 38% | 39% |
+| layer 24 (~75% depth) | 42% | 46% | **53%** | **53%** |
+
+(recall against the keyword judge's "jailbroken" label, out of 150/200 prompts it marked as jailbroken)
+
+Two caveats make this weaker evidence than the Qwen results above, and they're the reason this is reported as a secondary finding rather than folded into the main table:
+
+- **No manual verification.** Recall here is against the keyword judge, which the methodology note at the top of this section already established is unreliable (it credits garbled or off-target replies as "jailbroken"). Unlike the Qwen numbers, no one has read these 200 Phi-3.5 responses to check which are real jailbreaks.
+- **No false-positive measurement.** The sweep script reuses only the 200 GCG prompts — it never runs the defense on a harmless-prompt control set. Its `flagged` field also requires `complied_before=True`, which every keyword-judge-refused prompt fails by construction, so a computed "FPR" from this data would be 0% for every cell, not a real measurement. The table above reports recall only.
+
+Even with those caveats, the pattern is clear enough to answer the original question: **recall increases with depth (7–17% at the embedding layer → 38–46% at layer 16 → 42–53% at layer 24), the same shape already seen for Qwen2.5-0.5B-Instruct** (18–50% embedding → 24–75% mid-layer, from the sweep above). There's no second, model-specific "magic layer" for the generative task — Phi-3.5-mini's classification-backdoor result doesn't transfer. The gain from going deeper is consistent with the same recall/FPR trade-off documented above, not a break from it; at `remove_k=8-12`, layer 24's ~53% recall would very plausibly come with a FPR high enough to land in the same ~55% precision band as everything else in this section, but confirming that (and whether any of these are even real jailbreaks) would need a harmless control set and a manual read, which wasn't worth the added compute given how strongly the recall trend alone already answers the transfer question.
+
 ### Run it
 
 ```bash

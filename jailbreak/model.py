@@ -6,14 +6,19 @@ from .models import resolve_model
 PLACEHOLDER = "<<<USER_MESSAGE>>>"
 
 
-def load_chat_model(name, dtype, device):
+def load_chat_model(name, dtype, device, load_in_4bit=False):
     hf_id = resolve_model(name)
-    print(f"loading {hf_id} ({dtype})")
+    print(f"loading {hf_id} ({'4-bit' if load_in_4bit else dtype})")
     tok = AutoTokenizer.from_pretrained(hf_id)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     tok.padding_side = "left"
-    model = AutoModelForCausalLM.from_pretrained(hf_id, dtype=getattr(torch, dtype)).to(device).eval()
+    if load_in_4bit:
+        from transformers import BitsAndBytesConfig
+        quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=getattr(torch, dtype), bnb_4bit_quant_type="nf4")
+        model = AutoModelForCausalLM.from_pretrained(hf_id, quantization_config=quant, device_map={"": device}).eval()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(hf_id, dtype=getattr(torch, dtype)).to(device).eval()
     model.requires_grad_(False)
     return tok, model
 

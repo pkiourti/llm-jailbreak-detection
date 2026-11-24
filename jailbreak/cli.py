@@ -24,8 +24,12 @@ def parse_args(argv=None):
                                             "Integrated Gradients and activation probes.")
     choices = {"DTYPE": ["float32", "bfloat16", "float16"], "JUDGE": ["keyword", "llm"], "ATTR_METHOD": ["ig", "eg"]}
     for f in fields(Config):
+        flag = "--" + f.name.lower().replace("_", "-")
+        if f.name == "ATTACKER_LOAD_IN_4BIT":
+            p.add_argument(flag, dest=f.name, action=argparse.BooleanOptionalAction, default=None, help=f"default: {f.default}")
+            continue
         typ = {"PROBE_LAYER": int, "ATTR_LAYER": int}.get(f.name, f.type if f.type in (int, float, str) else str)
-        p.add_argument("--" + f.name.lower().replace("_", "-"), dest=f.name, type=typ, default=None,
+        p.add_argument(flag, dest=f.name, type=typ, default=None,
                        help=f"default: {f.default}", choices=choices.get(f.name))
     p.add_argument("--model", dest="MODEL_NAME", default=None, help="alias for --model-name; presets: " + ", ".join(MODELS))
     p.add_argument("--smoke", action="store_true", help=f"tiny CPU-friendly run to check the pipeline: {SMOKE}")
@@ -79,7 +83,7 @@ def main(argv=None):
     atok = amodel = None
     if "pair" in attacks or cfg.JUDGE == "llm":
         same = resolve_model(cfg.ATTACKER_MODEL) == hf_id
-        atok, amodel = (tok, model) if same else load_chat_model(cfg.ATTACKER_MODEL, cfg.DTYPE, device)
+        atok, amodel = (tok, model) if same else load_chat_model(cfg.ATTACKER_MODEL, cfg.DTYPE, device, cfg.ATTACKER_LOAD_IN_4BIT)
     judge = Judge(cfg.JUDGE, cfg.JUDGE_THRESHOLD, amodel, atok, device)
 
     print("\n## 3. Baseline (no attack)")

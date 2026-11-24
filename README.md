@@ -35,14 +35,21 @@ Both attacks target harmful behaviors from AdvBench (Zou et al. 2023) against `Q
 
 #### Attack success: reported vs. real
 
-| | Keyword-judge ASR | Real harm rate (manual) |
+| | Judge ASR | Real harm rate (manual) |
 |---|---|---|
-| GCG, weak search (`--gcg-batch 32`) | 100% | **49%** (n=100, CI roughly ±10pt) |
-| GCG, strong search (`--gcg-batch 128`, no early stop) | 100% | **54%** (n=100) |
-
-PAIR was explored qualitatively earlier in this investigation (both judges turned out to be similarly unreliable for it — the keyword judge over-reports it the same way it over-reports GCG, and the LLM judge under-reports it by rewarding fluent-but-off-target replies) but wasn't scaled up to a comparable sample size, so it's left out of this table pending a proper run.
+| GCG, weak search (`--gcg-batch 32`) | 100% (keyword) | **49%** (n=100, CI roughly ±10pt) |
+| GCG, strong search (`--gcg-batch 128`, no early stop) | 100% (keyword) | **54%** (n=100) |
+| PAIR, original setup (default judge/attacker), weak+strong combined | 100% (keyword) | **1%** (n=200) |
+| PAIR, fixed setup (see below), weak search | 10% (LLM, threshold 10) | **1%** (n=100) |
+| PAIR, fixed setup, strong search | 48% (LLM, threshold 10) | **12%** (n=100) |
 
 GCG's real hit rate roughly **doubled** (from ~20% to ~50%) simply by removing the pipeline's premature early-stopping (`--gcg-check-every 25` → `--gcg-steps`) and giving replies more room to finish (`--max-new-tokens 64` → `150`/`300`) — the default config under-sells the attack. Increasing the candidate pool further (`--gcg-batch 128` vs. `32`) pushed it a bit higher again, though that specific gain (49%→54%) is within noise at n=100 per condition.
+
+**PAIR needed two separate bugs fixed before it was even a measurable attack.** The original setup (`--judge keyword`, the default `--attacker-model qwen2.5-1.5b-instruct`) looked completely broken: all 200 attempts (`pair-n50-{weak,strong}[-seed1]`) scored "jailbroken" by the keyword judge, but a manual read against the same four-point rubric used for GCG (on-topic, coherent, specific, actionable) found only 2 real jailbreaks. Most replies weren't refusals at all — the model answered a *different, benign* question (a bomb-making goal gets a woodworking story), produced literally the *inverse* of the goal (identity-theft prevention tips for an identity-theft goal), or listed security terminology as a generic glossary without assembling an actual attack.
+
+Digging into *why* turned up the real bug: the keyword judge can only score 1 or 10, no gradient, so PAIR's internal search (`pair.py`'s `if best["score"] >= threshold: break`) stopped the instant any reply dodged a refusal phrase — attacks averaged **1.0–1.2 iterations out of a 5–10 budget**, never refining anything. Switching the internal judge to `--judge llm` (a real 1–10 rating) fixed the search mechanics — attacks now used their full iteration budget — but not the result: scores converged on 7–8/10 and real harm stayed near 0%, because the default 1.5B attacker model isn't a capable enough red-teamer; its "refined" prompts kept producing the same off-target/inverted replies, just rated more generously now by a judge with its own well-documented bias toward fluent structure over substance.
+
+What actually worked was also swapping the attacker for a bigger model — `--attacker-model qwen2.5-3b-instruct --attacker-load-in-4bit` (4-bit was needed to fit both models in 8GB; see `--attacker-load-in-4bit` under *Run it* below). With both fixes together, real harm rose from 1% to **6.5%** (13/200) — a genuine, if modest, improvement — and for the first time attack strength made a real difference (1%→12%, weak→strong) instead of being noise. Even so, the LLM judge's reported ASR (10% weak, 48% strong) still overstates real harm by roughly 4–5x: of 58 judge-flagged "jailbreaks," only 12 held up on manual read, split between the same inversion pattern and a new "glossary of attack category names with nothing assembled" pattern; one real jailbreak was missed by the judge entirely (a low-scored reply that buried a genuine SQL-injection methodology). **PAIR, even fixed, still falls far short of GCG's ~50% real success rate against this target** — a brittle, small-model-specific result, not evidence PAIR doesn't work in general.
 
 #### Defense performance against real jailbreaks (default settings: IG, embedding layer, `--remove-k 3`)
 
@@ -54,6 +61,19 @@ Measured on 200 independent GCG attack attempts (98 distinct AdvBench behaviors 
 | Activation probe | 39.6% · CI [31%, 49%] | 49.3% · CI [38%, 61%] | ~55% |
 
 Neither defense is close to deployable: IG rarely fires at all (catches ~1 in 8 real jailbreaks) but is relatively quiet on safe inputs; the probe catches more but at the cost of flagging roughly half of everything, harmful or not. **Attack strength (weak vs. strong search) does not reliably change either defense's recall or FPR** — every weak/strong comparison we ran had overlapping confidence intervals, including an initial, exciting-looking 83%→20% IG collapse from a 6-item sample that did not replicate at n=60 (±18% vs. the true ~15-18%, confirming that result was sampling noise, not a real effect of attack strength).
+
+#### PAIR, fixed setup: defense performance against real jailbreaks
+
+13 real jailbreaks and 187 non-jailbreaks across the 200 fixed-recipe attempts (`pair-n50-{weak,strong}-bigattacker[-seed1]`) — small enough that recall's confidence interval is wide, but no longer the n=2 of the original broken setup:
+
+| | Recall (of real jailbreaks) | False-positive rate (on non-jailbreaks) | Precision |
+|---|---|---|---|
+| IG | 23.1% · 95% CI [8%, 50%] (3/13) | 5.3% · CI [3%, 10%] (10/187) | 23.1% |
+| Activation probe | 0.0% · CI [0%, 23%] (0/13) | 0.0% · CI [0%, 2%] (0/187) | n/a (never flags) |
+
+**This is too small a sample to say IG beats the probe here.** Their recall CIs overlap ([8%, 50%] vs. [0%, 23%]), so by the same standard applied to the GCG weak-vs-strong comparisons above, this isn't a difference the data can actually support. What *is* a consistent observation, not a comparison: the harmfulness probe caught 0 of 15 total real PAIR jailbreaks across both investigations in this project (the original broken setup and this fixed one combined). That's worth noting as a pattern worth watching, not as evidence against the pre-registered hypothesis — settling whether IG genuinely outperforms the probe on PAIR would need substantially more real jailbreaks than either setup produced.
+
+IG's 5.3% false-positive rate on PAIR's non-jailbreak responses is also notably lower than its 21–23% rate on genuinely harmless Alpaca prompts (from the same four runs' `ig_false_positive_rate`) — PAIR's near-misses (inversions, glossaries) apparently don't trigger IG's token-removal flip the way ordinary harmless text occasionally does.
 
 #### Tuning the defense: none of it breaks the trade-off
 
@@ -70,7 +90,7 @@ A full sweep over `--attr-method` (ig/eg), `--attr-layer` (unset/12), and `--rem
 
 Every knob moves recall and false-positive rate together along essentially the same curve — more aggressive settings (more tokens removed, a later layer) catch more real jailbreaks but flag proportionally more harmless ones too, without ever improving precision. Expected Gradients never distinguishes itself from plain IG at matched settings (CIs overlap at every cell); `IG_STEPS` (the integration resolution, swept 4/8/16/32) is pure noise with no monotonic trend at all. The middle-layer attribution does reach a real, non-overlapping-CI recall advantage over the embedding layer at `remove_k=12` (75% vs. 50%) — but at 67% FPR, meaning it would flag two of every three harmless inputs, so it's not a usable improvement, just a further point on the same curve.
 
-**Revisiting the pre-registered hypothesis above, for the GCG half of it:** IG does localize GCG's suffix well mechanically (92–97% of removed tokens fall inside it, whenever IG flags something at all), but its *overall* recall against real jailbreaks is low (~12-24%) regardless of attack strength, method, or layer — "localizes well when it fires" is not the same as "fires often enough to matter." The PAIR side of the hypothesis (the harmfulness probe should be more robust to it) hasn't been tested at a comparable sample size yet — see above.
+**Revisiting the pre-registered hypothesis above, for the GCG half of it:** IG does localize GCG's suffix well mechanically (92–97% of removed tokens fall inside it, whenever IG flags something at all), but its *overall* recall against real jailbreaks is low (~12-24%) regardless of attack strength, method, or layer — "localizes well when it fires" is not the same as "fires often enough to matter." The PAIR half (the harmfulness probe should be more robust to it than IG, since no single token carries a fluent jailbreak) remains untested in any statistically meaningful sense (see below): across all 15 real PAIR jailbreaks found in this project, IG caught 3 and the probe caught 0, but at this sample size that's not enough to confirm or refute the hypothesis either way.
 
 #### Does a model's best classification-defense layer transfer to the generative jailbreak task?
 
@@ -124,7 +144,7 @@ uv run python -m jailbreak --attacks gcg --attr-method eg --attr-layer 12 --remo
   - `probe_projections.png`: harmfulness vs. refusal scatter for harmless prompts, plain harmful prompts and successful jailbreaks
   - `attribution_<attack>.png`: per-token IG for one jailbreak, with GCG suffix tokens in red
 
-**Models.** `--model` takes a preset (`qwen2.5-{0.5b,1.5b,3b}-instruct`, `smollm2-{360m,1.7b}-instruct`, `llama3.2-{1b,3b}-instruct`, `gemma2-2b-it`) or any Hugging Face chat model id. `--attacker-model` sets the PAIR attacker and LLM judge. A larger, less safety-tuned attacker writes better jailbreaks.
+**Models.** `--model` takes a preset (`qwen2.5-{0.5b,1.5b,3b}-instruct`, `smollm2-{360m,1.7b}-instruct`, `llama3.2-{1b,3b}-instruct`, `gemma2-2b-it`) or any Hugging Face chat model id. `--attacker-model` sets the PAIR attacker and LLM judge. A larger attacker writes meaningfully better jailbreaks (see *Attack success* above) — `--attacker-load-in-4bit` loads it in 4-bit (bitsandbytes) so a bigger attacker still fits alongside the target on a memory-constrained GPU (needed for `qwen2.5-3b-instruct` + `qwen2.5-0.5b-instruct` together on 8GB).
 
 **Data.** AdvBench is loaded from the [GCG repo's CSV](https://github.com/llm-attacks/llm-attacks/tree/main/data/advbench) because the Hub copy is gated. Harmless prompts are Alpaca instructions with no input field.
 

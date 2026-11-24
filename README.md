@@ -1,6 +1,6 @@
 # Jailbreak Detection in Small Chat Models
 
-Jailbreak attacks on small open chat models, paired with interpretability-based defenses: break a chat model's safety training with GCG and PAIR (`jailbreak/`), then detect the jailbreaks with Integrated Gradients and activation probes. The sleeper-agent backdoor experiment that used to live here is now its own repo, [llm-sleeper-agents](https://github.com/pkiourti/llm-sleeper-agents).
+Can a [MISA](https://arxiv.org/abs/2305.09941)-style attribution defense, built to catch a fixed backdoor trigger, also catch a jailbreak prompt discovered at inference time? This repo attacks small open chat models with GCG and PAIR (`jailbreak/`), then tests Integrated Gradients and activation probes against them.
 
 ## Jailbreaks: GCG and PAIR vs. attribution and probes
 
